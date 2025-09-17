@@ -1,0 +1,5 @@
+- average.sh computes the average of the passed elements;
+- mk_rand_u2_ints.sh makes numbers.txt file with 150 u2 random numbers;
+- mk_rand_ints.sh is an alternative to the above;
+- print_p_d_t.sh prints current path, date and PATH env. var.;
+- with cake is created during the lab.
