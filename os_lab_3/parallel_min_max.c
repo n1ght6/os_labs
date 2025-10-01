@@ -21,7 +21,6 @@ int main(int argc, char **argv) {
   bool with_files = false;
 
   while (true) {
-  
     static struct option options[] = {
         {"seed", required_argument, 0, 0},
         {"array_size", required_argument, 0, 0},
@@ -93,13 +92,29 @@ int main(int argc, char **argv) {
   }
   
   GenerateArray(array, array_size, seed);
-  int active_child_processes = 0;
 
-  int pipe_fd[2][pnum]; 
+  pid_t *child_pids = malloc(sizeof(pid_t) * pnum);
+  if (child_pids == NULL) {
+    printf("Memory allocation failed\n");
+    free(array);
+    return 1;
+  }
+
+  int (*pipe_fd)[2] = NULL;
   if (!with_files) {
+    pipe_fd = malloc(pnum * sizeof(int[2]));
+    if (pipe_fd == NULL) {
+      printf("Memory allocation failed\n");
+      free(array);
+      free(child_pids);
+      return 1;
+    }
     for (int i = 0; i < pnum; i++) {
       if (pipe(pipe_fd[i]) == -1) {
         perror("pipe");
+        free(array);
+        free(child_pids);
+        free(pipe_fd);
         return 1;
       }
     }
@@ -108,20 +123,16 @@ int main(int argc, char **argv) {
   struct timeval start_time;
   gettimeofday(&start_time, NULL);
 
-
-  pid_t *child_pids = malloc(sizeof(pid_t) * pnum);
-  if (child_pids == NULL) {
-    printf("Memory allocation failed\n");
-    return 1;
-  }
+  int active_child_processes = 0;
 
   for (int i = 0; i < pnum; i++) {
     pid_t child_pid = fork();
     if (child_pid >= 0) {
       if (child_pid == 0) {
+        // Дочерний процесс
+        free(child_pids);
 
         if (!with_files) {
-
           for (int j = 0; j < pnum; j++) {
             if (j != i) {
               close(pipe_fd[j][0]);
@@ -132,14 +143,12 @@ int main(int argc, char **argv) {
           }
         }
 
-
         int begin = i * (array_size / pnum);
         int end = (i == pnum - 1) ? array_size : (i + 1) * (array_size / pnum);
         
         struct MinMax local_min_max = GetMinMax(array, begin, end);
 
         if (with_files) {
-
           char filename_min[20], filename_max[20];
           sprintf(filename_min, "min_%d", i);
           sprintf(filename_max, "max_%d", i);
@@ -155,32 +164,33 @@ int main(int argc, char **argv) {
           fclose(fmin);
           fclose(fmax);
         } else {
-
           write(pipe_fd[i][1], &local_min_max.min, sizeof(int));
           write(pipe_fd[i][1], &local_min_max.max, sizeof(int));
           close(pipe_fd[i][1]);
         }
         
         free(array);
+        if (!with_files) free(pipe_fd);
         exit(0);
       } else {
-
-        child_pids[i] = child_pid;
+        // Родительский процесс
+        child_pids[active_child_processes] = child_pid;
         active_child_processes += 1;
       }
     } else {
       printf("Fork failed!\n");
+      free(array);
+      free(child_pids);
+      if (!with_files) free(pipe_fd);
       return 1;
     }
   }
-
 
   if (!with_files) {
     for (int i = 0; i < pnum; i++) {
       close(pipe_fd[i][1]);
     }
   }
-
 
   while (active_child_processes > 0) {
     int status;
@@ -195,11 +205,10 @@ int main(int argc, char **argv) {
   min_max.max = INT_MIN;
 
   for (int i = 0; i < pnum; i++) {
-    int min = INT_MAX;
-    int max = INT_MIN;
+    int min_val = INT_MAX;
+    int max_val = INT_MIN;
 
     if (with_files) {
-
       char filename_min[20], filename_max[20];
       sprintf(filename_min, "min_%d", i);
       sprintf(filename_max, "max_%d", i);
@@ -208,24 +217,25 @@ int main(int argc, char **argv) {
       FILE *fmax = fopen(filename_max, "r");
       
       if (fmin != NULL) {
-        fscanf(fmin, "%d", &min);
+        fscanf(fmin, "%d", &min_val);
         fclose(fmin);
-        remove(filename_min); 
+        remove(filename_min);
       }
+      
       if (fmax != NULL) {
-        fscanf(fmax, "%d", &max);
+        fscanf(fmax, "%d", &max_val);
         fclose(fmax);
-        remove(filename_max); 
+        remove(filename_max);
       }
     } else {
-
-      read(pipe_fd[i][0], &min, sizeof(int));
-      read(pipe_fd[i][0], &max, sizeof(int));
-      close(pipe_fd[i][0]); 
+      if (read(pipe_fd[i][0], &min_val, sizeof(int)) > 0) {
+        read(pipe_fd[i][0], &max_val, sizeof(int));
+      }
+      close(pipe_fd[i][0]);
     }
 
-    if (min < min_max.min) min_max.min = min;
-    if (max > min_max.max) min_max.max = max;
+    if (min_val < min_max.min) min_max.min = min_val;
+    if (max_val > min_max.max) min_max.max = max_val;
   }
 
   struct timeval finish_time;
@@ -236,6 +246,7 @@ int main(int argc, char **argv) {
 
   free(array);
   free(child_pids);
+  if (!with_files) free(pipe_fd);
 
   printf("Min: %d\n", min_max.min);
   printf("Max: %d\n", min_max.max);
